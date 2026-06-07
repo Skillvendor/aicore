@@ -69,4 +69,6 @@ dependencies {
     implementation(libs.retrofit2.kotlinx.serialization.converter)
     implementation(libs.okhttp)
     implementation(libs.androidx.datastore.preferences)
+
+    implementation("com.google.mlkit:genai-prompt:1.0.0-beta2")
 }

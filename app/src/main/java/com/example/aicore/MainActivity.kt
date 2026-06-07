@@ -21,6 +21,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -31,43 +32,38 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-
-                    // The NavController handles screen swapping
                     val navController = rememberNavController()
 
                     NavHost(
                         navController = navController,
                         startDestination = TimerScreenDestination
                     ) {
-
-                        // --- SCREEN 1 ROUTE ---
+                        // --- SCREEN 1: TIMER ---
                         composable<TimerScreenDestination> {
                             TimerScreen(
                                 onTimerFinished = {
-                                    // When the timer finishes, swap to Screen 2
+                                    // Timer now goes to Chat Screen!
+                                    navController.navigate(ChatScreenDestination) {
+                                        // Optional: Clear the timer so we can't 'back' into it
+                                        popUpTo(TimerScreenDestination) { inclusive = true }
+                                    }
+                                }
+                            )
+                        }
+
+                        // --- SCREEN 2: AI CHAT ---
+                        composable<ChatScreenDestination> {
+                            ChatScreen(
+                                onNavigateToQuote = {
                                     navController.navigate(QuoteScreenDestination)
                                 }
                             )
                         }
 
-                        // --- SCREEN 2 ROUTE (The Chat Screen) ---
-//                        composable<ChatScreenDestination> {
-//                            ChatScreen(
-//                                onNavigateBack = {
-//                                    navController.popBackStack() // Go back to timer
-//                                },
-//                                onNavigateToQuote = {
-//                                    navController.navigate(QuoteScreenDestination) // Go to Screen 3
-//                                }
-//                            )
-//                        }
-
-                        // --- SCREEN 3 ROUTE (Placeholder for now) ---
-                        // --- SCREEN 3 ROUTE (The new Quote Screen) ---
+                        // --- SCREEN 3: QUOTE PERSISTENCE ---
                         composable<QuoteScreenDestination> {
                             QuoteScreen(
                                 onNavigateBack = {
-                                    // Pops back to the Timer Screen
                                     navController.popBackStack()
                                 }
                             )
