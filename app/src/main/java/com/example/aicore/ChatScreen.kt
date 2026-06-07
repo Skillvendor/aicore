@@ -37,9 +37,13 @@ import kotlinx.coroutines.withContext
 import androidx.compose.foundation.layout.ime
 import androidx.compose.ui.platform.LocalDensity
 
-import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.systemBars
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
+
+import kotlinx.coroutines.Job
+
+import androidx.compose.material.icons.filled.Close
 
 // --- 1. STATE DEFINITIONS ---
 sealed class ModelStatus {
@@ -64,6 +68,9 @@ class ChatViewModel : ViewModel() {
     val isTyping: StateFlow<Boolean> = _isTyping.asStateFlow()
 
     private val generativeModel: GenerativeModel = Generation.getClient()
+
+    // Keep a reference to the running generation coroutine
+    private var generationJob: Job? = null
 
     init {
         checkAndDownloadModel()
@@ -106,7 +113,8 @@ class ChatViewModel : ViewModel() {
     fun sendMessage(userText: String) {
         if (userText.isBlank()) return
 
-        viewModelScope.launch {
+        // Assign the coroutine to our generationJob tracker
+        generationJob = viewModelScope.launch {
             _messages.value = _messages.value + ChatMessage(userText, true)
             _isTyping.value = true
 
@@ -117,22 +125,48 @@ class ChatViewModel : ViewModel() {
                     val stream = generativeModel.generateContentStream(userText)
 
                     stream.collect { chunk ->
-                        _isTyping.value = false
+
                         val chunkText = chunk.candidates.firstOrNull()?.text ?: ""
                         val currentList = _messages.value.toMutableList()
                         val lastIndex = currentList.lastIndex
-                        val currentBotMessage = currentList[lastIndex]
 
-                        currentList[lastIndex] = currentBotMessage.copy(
-                            text = currentBotMessage.text + chunkText
-                        )
-                        _messages.value = currentList
+                        if (lastIndex >= 0) {
+                            val currentBotMessage = currentList[lastIndex]
+                            var updatedText = currentBotMessage.text + chunkText
+                            if (currentBotMessage.text.isEmpty()) {
+                                updatedText = updatedText.trimStart()
+                            }
+                            currentList[lastIndex] = currentBotMessage.copy(text = updatedText)
+                            _messages.value = currentList
+                        }
                     }
                 }
             } catch (e: Exception) {
                 _isTyping.value = false
-                _messages.value = _messages.value + ChatMessage("Error: ${e.localizedMessage}", false)
+                // Only append error UI if it wasn't a deliberate user cancellation
+                if (generationJob?.isCancelled == false) {
+                    _messages.value = _messages.value + ChatMessage("Error: ${e.localizedMessage}", false)
+                }
+            } finally {
+                _isTyping.value = false
             }
+        }
+    }
+
+    fun stopGeneration() {
+        // Cancel the active coroutine. This triggers cancellation down to AICore.
+        generationJob?.cancel()
+        _isTyping.value = false
+
+        // Optional UX: Inform the user inside the bubble that it was stopped
+        val currentList = _messages.value.toMutableList()
+        val lastIndex = currentList.lastIndex
+        if (lastIndex >= 0 && !currentList[lastIndex].isUser) {
+            val currentBotMessage = currentList[lastIndex]
+            currentList[lastIndex] = currentBotMessage.copy(
+                text = currentBotMessage.text + " [Generation Stopped by User]"
+            )
+            _messages.value = currentList
         }
     }
 
@@ -208,7 +242,8 @@ fun ChatScreen(
                         ChatInterface(
                             messages = messages,
                             isTyping = isTyping,
-                            onSendMessage = { viewModel.sendMessage(it) }
+                            onSendMessage = { viewModel.sendMessage(it) },
+                            onStopGeneration = { viewModel.stopGeneration() } // Pass the function reference here
                         )
                     }
                 }
@@ -220,13 +255,18 @@ fun ChatScreen(
 fun ChatInterface(
     messages: List<ChatMessage>,
     isTyping: Boolean,
-    onSendMessage: (String) -> Unit
+    onSendMessage: (String) -> Unit,
+    onStopGeneration: () -> Unit // 1. Add callback hook
 ) {
     var textInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
     val density = LocalDensity.current
     val imeHeight = WindowInsets.ime.getBottom(density)
+    val focusManager = LocalFocusManager.current
+
+    // 2. Check if the model is currently active
+    val isModelActive = isTyping
 
     LaunchedEffect(messages.size, messages.lastOrNull()?.text?.length, isTyping, imeHeight) {
         if (messages.isNotEmpty() || isTyping) {
@@ -234,7 +274,16 @@ fun ChatInterface(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.ime)
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = {
+                    focusManager.clearFocus()
+                })
+            }
+    ) {
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -265,18 +314,32 @@ fun ChatInterface(
                 onValueChange = { textInput = it },
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Ask the local model...") },
-                shape = RoundedCornerShape(24.dp)
+                shape = RoundedCornerShape(24.dp),
+                enabled = !isModelActive // Optional UX: disable inputting text while model is running
             )
             Spacer(modifier = Modifier.width(8.dp))
+
+            // 3. Dynamic Stop/Send Button Setup
             FloatingActionButton(
                 onClick = {
-                    onSendMessage(textInput)
-                    textInput = ""
+                    if (isModelActive) {
+                        onStopGeneration()
+                    } else {
+                        focusManager.clearFocus()
+                        onSendMessage(textInput)
+                        textInput = ""
+                    }
                 },
-                containerColor = MaterialTheme.colorScheme.primary,
+                // Shift background color to match the intent (Error/Red tint for stopping)
+                containerColor = if (isModelActive) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primary,
+                contentColor = if (isModelActive) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimary,
                 modifier = Modifier.size(48.dp)
             ) {
-                Icon(Icons.Default.Send, contentDescription = "Send")
+                if (isModelActive) {
+                    Icon(Icons.Default.Close, contentDescription = "Stop Generation")
+                } else {
+                    Icon(Icons.Default.Send, contentDescription = "Send")
+                }
             }
         }
     }
@@ -296,7 +359,8 @@ fun ChatBubble(message: ChatMessage) {
                 .background(bgColor)
                 .padding(12.dp)
         ) {
-            Text(text = message.text, color = textColor)
+            // Use .trim() here to strip out trailing/leading phantom spaces during rendering
+            Text(text = message.text.trim(), color = textColor)
         }
     }
 }
